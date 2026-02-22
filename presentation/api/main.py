@@ -4,13 +4,16 @@ FastAPI Web Application
 Architectural Intent:
 - REST API for Cockpit platform
 - Follows presentation layer patterns
+- WebSocket support for real-time updates
 """
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
 from uuid import UUID
+import json
+import asyncio
 
 from infrastructure.config.dependency_injection import get_container
 from presentation.api.controllers import (
@@ -19,6 +22,7 @@ from presentation.api.controllers import (
     AgentController,
     CostController,
 )
+from application.services.copilot_service import get_copilot_service
 
 
 app = FastAPI(
@@ -303,6 +307,118 @@ async def analyze_costs(
     if not result.success:
         raise HTTPException(status_code=400, detail=result.error)
     return result.data
+
+
+class CopilotRequest(BaseModel):
+    message: str
+
+
+@app.post("/api/copilot")
+async def copilot_chat(request: CopilotRequest):
+    """AI Co-pilot chat endpoint"""
+    copilot = get_copilot_service()
+    result = await copilot.process_command(request.message)
+    return {
+        "success": result.success,
+        "message": result.message,
+        "action_taken": result.action_taken,
+        "data": result.data,
+    }
+
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def send_message(self, message: dict, websocket: WebSocket):
+        await websocket.send_json(message)
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            await connection.send_json(message)
+
+
+manager = ConnectionManager()
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            message = json.loads(data)
+            
+            if message.get("type") == "ping":
+                await manager.send_message({"type": "pong"}, websocket)
+            elif message.get("type") == "subscribe"):
+                event_type = message.get("event")
+                await manager.send_message({
+                    "type": "subscribed",
+                    "event": event_type
+                }, websocket)
+                
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+
+
+@app.websocket("/ws/copilot")
+async def copilot_websocket(websocket: WebSocket):
+    await websocket.accept()
+    manager.connect(websocket)
+    
+    try:
+        await websocket.send_json({
+            "type": "message",
+            "content": "Hi! I'm your AI infrastructure co-pilot. What would you like to do today?",
+            "role": "assistant"
+        })
+        
+        while True:
+            data = await websocket.receive_text()
+            message = json.loads(data)
+            
+            if message.get("type") == "message":
+                user_input = message.get("content", "")
+                
+                await websocket.send_json({
+                    "type": "typing",
+                    "typing": True
+                })
+                
+                copilot = get_copilot_service()
+                result = await copilot.process_command(user_input)
+                
+                await websocket.send_json({
+                    "type": "typing",
+                    "typing": False
+                })
+                
+                await websocket.send_json({
+                    "type": "message",
+                    "content": result.message,
+                    "role": "assistant",
+                    "action_taken": result.action_taken,
+                    "data": result.data
+                })
+                
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+
+
+async def broadcast_event(event_type: str, data: dict):
+    await manager.broadcast({
+        "type": "event",
+        "event": event_type,
+        "data": data
+    })
 
 
 if __name__ == "__main__":

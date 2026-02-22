@@ -1,14 +1,16 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { 
   Cloud, Server, Bot, DollarSign, 
   Activity, Plus, Play, Square, Trash2,
-  MessageSquare, X, Send
+  MessageSquare, X, Send, Bell, Settings,
+  FileText, GitBranch, Zap
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import axios from 'axios';
 
 const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
+const WS_BASE = process.env.REACT_APP_WS_URL || 'ws://localhost:8000';
 
 interface Provider {
   id: string;
@@ -34,11 +36,19 @@ interface Agent {
   status: string;
 }
 
+interface Notification {
+  id: string;
+  type: 'info' | 'success' | 'warning' | 'error';
+  message: string;
+  timestamp: Date;
+}
+
 interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
+  action_taken?: string;
 }
 
 function Sidebar() {
@@ -50,6 +60,9 @@ function Sidebar() {
     { path: '/resources', icon: Server, label: 'Resources' },
     { path: '/agents', icon: Bot, label: 'Agents' },
     { path: '/costs', icon: DollarSign, label: 'Costs' },
+    { path: '/templates', icon: FileText, label: 'Templates' },
+    { path: '/workflows', icon: GitBranch, label: 'Workflows' },
+    { path: '/settings', icon: Settings, label: 'Settings' },
   ];
 
   return (
@@ -73,10 +86,32 @@ function Dashboard() {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [resources, setResources] = useState<Resource[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
 
   useEffect(() => {
     fetchData();
+    setupWebSocket();
   }, []);
+
+  const setupWebSocket = () => {
+    const ws = new WebSocket(`${WS_BASE}/ws`);
+    
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === 'event') {
+        const notification: Notification = {
+          id: Date.now().toString(),
+          type: 'info',
+          message: `${data.event}: ${JSON.stringify(data.data)}`,
+          timestamp: new Date()
+        };
+        setNotifications(prev => [notification, ...prev].slice(0, 10));
+        fetchData();
+      }
+    };
+
+    return () => ws.close();
+  };
 
   const fetchData = async () => {
     try {
@@ -102,6 +137,13 @@ function Dashboard() {
         <h1 className="page-title">Dashboard</h1>
         <p className="page-subtitle">Overview of your cloud infrastructure</p>
       </div>
+
+      {notifications.length > 0 && (
+        <div className="notifications-bar">
+          <Bell size={16} />
+          <span>{notifications.length} new events</span>
+        </div>
+      )}
 
       <div className="stats-grid">
         <div className="stat-card">
@@ -282,15 +324,6 @@ function Providers() {
                     required
                   />
                 </div>
-                <div className="form-group">
-                  <label className="form-label">Account ID (optional)</label>
-                  <input 
-                    className="form-input"
-                    value={formData.account_id}
-                    onChange={e => setFormData({ ...formData, account_id: e.target.value })}
-                    placeholder="123456789"
-                  />
-                </div>
               </div>
               <div className="modal-footer">
                 <button type="button" className="btn btn-secondary" onClick={() => setShowModal(false)}>
@@ -440,17 +473,14 @@ function Agents() {
 
 function Costs() {
   const [costs, setCosts] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
 
   const fetchCosts = async () => {
-    setLoading(true);
     try {
       const res = await axios.get(`${API_BASE}/costs/sample-provider-id`);
       setCosts(res.data);
     } catch (e) {
       console.error(e);
     }
-    setLoading(false);
   };
 
   useEffect(() => {
@@ -478,6 +508,107 @@ function Costs() {
   );
 }
 
+function Templates() {
+  const templates = [
+    { id: '1', name: 'Web Server', description: 'EC2 with load balancer', provider: 'AWS' },
+    { id: '2', name: 'Database', description: 'RDS PostgreSQL', provider: 'AWS' },
+    { id: '3', name: 'Kubernetes', description: 'EKS cluster', provider: 'AWS' },
+  ];
+
+  return (
+    <div>
+      <div className="page-header">
+        <h1 className="page-title">Templates</h1>
+        <p className="page-subtitle">Infrastructure templates</p>
+      </div>
+
+      <div className="card">
+        <div className="resource-list">
+          {templates.map(template => (
+            <div key={template.id} className="resource-item">
+              <div className="resource-info">
+                <div className="resource-icon">
+                  <FileText size={20} />
+                </div>
+                <div>
+                  <div className="resource-name">{template.name}</div>
+                  <div className="resource-type">{template.description}</div>
+                </div>
+              </div>
+              <button className="btn btn-primary">Deploy</button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Workflows() {
+  const workflows = [
+    { id: '1', name: 'Deploy App', description: 'Build and deploy to production', status: 'active' },
+    { id: '2', name: 'Scale Infrastructure', description: 'Auto-scale based on load', status: 'active' },
+  ];
+
+  return (
+    <div>
+      <div className="page-header">
+        <h1 className="page-title">Workflows</h1>
+        <p className="page-subtitle">Automated workflows</p>
+      </div>
+
+      <div className="card">
+        <div className="resource-list">
+          {workflows.map(workflow => (
+            <div key={workflow.id} className="resource-item">
+              <div className="resource-info">
+                <div className="resource-icon">
+                  <GitBranch size={20} />
+                </div>
+                <div>
+                  <div className="resource-name">{workflow.name}</div>
+                  <div className="resource-type">{workflow.description}</div>
+                </div>
+              </div>
+              <button className="btn btn-primary">
+                <Zap size={16} style={{ marginRight: 8 }} />
+                Run
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Settings() {
+  return (
+    <div>
+      <div className="page-header">
+        <h1 className="page-title">Settings</h1>
+        <p className="page-subtitle">Configure your cockpit</p>
+      </div>
+
+      <div className="card">
+        <h3 className="card-title">API Configuration</h3>
+        <div className="form-group">
+          <label className="form-label">API URL</label>
+          <input className="form-input" defaultValue="http://localhost:8000/api" />
+        </div>
+        <div className="form-group">
+          <label className="form-label">AI Provider</label>
+          <select className="form-select">
+            <option value="claude">Claude</option>
+            <option value="openai">OpenAI</option>
+            <option value="gemini">Gemini</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AICopilot() {
   const [isOpen, setIsOpen] = useState(true);
   const [messages, setMessages] = useState<Message[]>([
@@ -490,9 +621,48 @@ function AICopilot() {
   ]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [ws, setWs] = useState<WebSocket | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const handleSend = async () => {
-    if (!input.trim()) return;
+  useEffect(() => {
+    const websocket = new WebSocket(`${WS_BASE}/ws/copilot`);
+    
+    websocket.onopen = () => {
+      console.log('Connected to AI copilot');
+    };
+
+    websocket.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      
+      if (data.type === 'typing') {
+        setIsTyping(data.typing);
+      } else if (data.type === 'message') {
+        const assistantMessage: Message = {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: data.content,
+          timestamp: new Date(),
+          action_taken: data.action_taken
+        };
+        setMessages(prev => [...prev, assistantMessage]);
+      }
+    };
+
+    websocket.onerror = (error) => {
+      console.error('WebSocket error:', error);
+    };
+
+    setWs(websocket);
+
+    return () => websocket.close();
+  }, []);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  const handleSend = () => {
+    if (!input.trim() || !ws) return;
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -502,48 +672,8 @@ function AICopilot() {
     };
 
     setMessages(prev => [...prev, userMessage]);
+    ws.send(JSON.stringify({ type: 'message', content: input }));
     setInput('');
-    setIsTyping(true);
-
-    try {
-      const response = await processNaturalLanguage(input);
-      
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: response,
-        timestamp: new Date()
-      };
-      
-      setMessages(prev => [...prev, assistantMessage]);
-    } catch (e) {
-      console.error(e);
-    }
-
-    setIsTyping(false);
-  };
-
-  const processNaturalLanguage = async (text: string): Promise<string> => {
-    const lower = text.toLowerCase();
-    
-    if (lower.includes('create') && lower.includes('provider')) {
-      return "I'll create a new cloud provider for you. What provider type would you like (AWS, Azure, or GCP)?";
-    }
-    
-    if (lower.includes('start') || lower.includes('stop') || lower.includes('terminate')) {
-      return "I can help with that. Which resource would you like to " + 
-        (lower.includes('start') ? 'start' : lower.includes('stop') ? 'stop' : 'terminate') + "?";
-    }
-    
-    if (lower.includes('cost') || lower.includes('spending')) {
-      return "I'll analyze your cloud costs. Our current analysis shows:\n\n• Compute: $500/month\n• Storage: $200/month\n• Network: $100/month\n\nWould you like recommendations for cost optimization?";
-    }
-    
-    if (lower.includes('create') && lower.includes('instance')) {
-      return "To create a new instance, I'll need:\n\n1. Which provider?\n2. Instance type (e.g., t3.micro)\n3. Region\n\nOr would you like me to use defaults?";
-    }
-
-    return "I understand you want to: \"" + text + "\"\n\nThis would involve several API calls. Would you like me to proceed with execution, or would you like more details first?";
   };
 
   return (
@@ -594,6 +724,7 @@ function AICopilot() {
                 </div>
               </div>
             )}
+            <div ref={messagesEndRef} />
           </div>
           
           <div className="copilot-input">
@@ -615,7 +746,6 @@ function AICopilot() {
         <motion.button
           initial={{ scale: 0 }}
           animate={{ scale: 1 }}
-          className="copilot-fab"
           onClick={() => setIsOpen(true)}
           style={{
             position: 'fixed',
@@ -652,6 +782,9 @@ function App() {
             <Route path="/resources" element={<Resources />} />
             <Route path="/agents" element={<Agents />} />
             <Route path="/costs" element={<Costs />} />
+            <Route path="/templates" element={<Templates />} />
+            <Route path="/workflows" element={<Workflows />} />
+            <Route path="/settings" element={<Settings />} />
           </Routes>
         </main>
         <AICopilot />
