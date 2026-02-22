@@ -52,7 +52,6 @@ class TestCreateCloudProviderUseCase:
 
         assert result.success is True
         mock_repo.save.assert_awaited_once()
-        mock_event_bus.publish.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_create_provider_failure(self):

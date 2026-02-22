@@ -122,15 +122,13 @@ class TestDAGOrchestrator:
         async def step2(ctx):
             return "step2"
 
-        orchestrator = DAGOrchestrator(
-            [
-                WorkflowStep("step1", step1, ["step2"]),
-                WorkflowStep("step2", step2, ["step1"]),
-            ]
-        )
-
         with pytest.raises(ValueError, match="Circular dependency"):
-            asyncio.get_event_loop().run_until_complete(orchestrator.execute({}))
+            DAGOrchestrator(
+                [
+                    WorkflowStep("step1", step1, ["step2"]),
+                    WorkflowStep("step2", step2, ["step1"]),
+                ]
+            )
 
     @pytest.mark.asyncio
     async def test_context_passing(self):
