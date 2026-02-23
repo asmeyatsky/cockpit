@@ -330,6 +330,99 @@ class CreateAgentUseCase:
             return UseCaseResult(success=False, error=str(e))
 
 
+class ActivateAgentUseCase:
+    def __init__(
+        self,
+        agent_repo: AgentRepositoryPort,
+        event_bus: EventBusPort,
+    ):
+        self._repo = agent_repo
+        self._event_bus = event_bus
+
+    async def execute(self, agent_id: str) -> UseCaseResult:
+        try:
+            agent_uuid = UUID(agent_id)
+            agent = await self._repo.get_by_id(agent_uuid)
+
+            if not agent:
+                return UseCaseResult(success=False, error="Agent not found")
+
+            activated = agent.activate()
+            await self._repo.save(activated)
+
+            if activated.domain_events:
+                await self._event_bus.publish(list(activated.domain_events))
+
+            return UseCaseResult(
+                success=True,
+                data=AgentDTO.from_entity(activated).to_dict(),
+            )
+        except Exception as e:
+            return UseCaseResult(success=False, error=str(e))
+
+
+class DeactivateAgentUseCase:
+    def __init__(
+        self,
+        agent_repo: AgentRepositoryPort,
+        event_bus: EventBusPort,
+    ):
+        self._repo = agent_repo
+        self._event_bus = event_bus
+
+    async def execute(self, agent_id: str) -> UseCaseResult:
+        try:
+            agent_uuid = UUID(agent_id)
+            agent = await self._repo.get_by_id(agent_uuid)
+
+            if not agent:
+                return UseCaseResult(success=False, error="Agent not found")
+
+            deactivated = agent.deactivate()
+            await self._repo.save(deactivated)
+
+            if deactivated.domain_events:
+                await self._event_bus.publish(list(deactivated.domain_events))
+
+            return UseCaseResult(
+                success=True,
+                data=AgentDTO.from_entity(deactivated).to_dict(),
+            )
+        except Exception as e:
+            return UseCaseResult(success=False, error=str(e))
+
+
+class DisconnectProviderUseCase:
+    def __init__(
+        self,
+        provider_repo: CloudProviderRepositoryPort,
+        event_bus: EventBusPort,
+    ):
+        self._repo = provider_repo
+        self._event_bus = event_bus
+
+    async def execute(self, provider_id: str) -> UseCaseResult:
+        try:
+            provider_uuid = UUID(provider_id)
+            provider = await self._repo.get_by_id(provider_uuid)
+
+            if not provider:
+                return UseCaseResult(success=False, error="Provider not found")
+
+            disconnected = provider.disconnect()
+            await self._repo.save(disconnected)
+
+            if disconnected.domain_events:
+                await self._event_bus.publish(list(disconnected.domain_events))
+
+            return UseCaseResult(
+                success=True,
+                data=CloudProviderDTO.from_entity(disconnected).to_dict(),
+            )
+        except Exception as e:
+            return UseCaseResult(success=False, error=str(e))
+
+
 class AnalyzeCostUseCase:
     def __init__(
         self,

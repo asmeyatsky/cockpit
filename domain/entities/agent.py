@@ -17,6 +17,8 @@ from datetime import datetime, UTC
 from enum import Enum
 from uuid import UUID, uuid4
 
+from domain.exceptions import DomainError
+
 
 class AIProvider(Enum):
     CLAUDE = "claude"
@@ -121,5 +123,5 @@ class AgentErrorEvent:
     occurred_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
-class DomainError(Exception):
-    pass
+__all__ = ["Agent", "AgentStatus", "AIProvider", "AgentCapability", "AgentConfig",
+           "AgentActivatedEvent", "AgentDeactivatedEvent", "AgentErrorEvent"]

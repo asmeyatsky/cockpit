@@ -5,11 +5,20 @@ Architectural Intent:
 - Real AI provider implementations (Claude, OpenAI, Gemini)
 - Implements AIProviderPort interface
 - Following Rule 2: Interface-First Development
+
+MCP Integration:
+- Each adapter can be used by agent-service MCP server
+- Tools: complete, stream_complete
+- Resources: agent://{agent_id}/last-completion
+
+Parallelization Strategy:
+- All adapters are async, enabling concurrent multi-agent execution
+- AgentExecutorAdapter supports parallel task fan-out
 """
 
 import os
-from abc import ABC, abstractmethod
-from typing import Optional, AsyncIterator
+import logging
+from typing import Optional
 from dataclasses import dataclass
 
 import anthropic
@@ -22,9 +31,35 @@ from domain.ports.ai_ports import (
     CompletionResponse,
     TaskResult,
     AgentExecutorPort,
+    ContextBudget,
 )
 from domain.entities.agent import Agent
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
+
+
+DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6"
+DEFAULT_OPENAI_MODEL = "gpt-4o"
+DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
+
+
+def _build_messages(request: CompletionRequest) -> list[dict]:
+    """5.7: Build message list with context window trimming."""
+    messages = []
+    if request.conversation_history:
+        budget = request.context_budget or ContextBudget()
+        messages = budget.trim_history(request.conversation_history)
+    if not messages or messages[-1].get("content") != request.prompt:
+        messages.append({"role": "user", "content": request.prompt})
+    return messages
+
+
+def _validate_output(request: CompletionRequest, content: str) -> bool:
+    """5.6: Validate AI output against schema if provided."""
+    if request.output_schema:
+        return request.output_schema.validate(content)
+    return True
 
 
 class ClaudeAdapter(AIProviderPort):
@@ -35,29 +70,43 @@ class ClaudeAdapter(AIProviderPort):
         self._client = anthropic.AsyncAnthropic(api_key=self._api_key)
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
-        message = await self._client.messages.create(
-            model=request.system_prompt or "claude-3-5-sonnet-20241022",
-            max_tokens=request.max_tokens,
-            temperature=request.temperature,
-            messages=[{"role": "user", "content": request.prompt}],
-        )
+        model = request.model or DEFAULT_CLAUDE_MODEL
+        messages = _build_messages(request)
+        kwargs = {
+            "model": model,
+            "max_tokens": request.max_tokens,
+            "temperature": request.temperature,
+            "messages": messages,
+        }
+        if request.system_prompt:
+            kwargs["system"] = request.system_prompt
+
+        message = await self._client.messages.create(**kwargs)
+        content = message.content[0].text
+        schema_valid = _validate_output(request, content)
 
         return CompletionResponse(
-            content=message.content[0].text,
+            content=content,
             tokens_used=message.usage.input_tokens + message.usage.output_tokens,
             model=message.model,
             finish_reason=message.stop_reason or "end_turn",
+            schema_valid=schema_valid,
         )
 
     async def stream_complete(
         self, request: CompletionRequest, callback
     ) -> CompletionResponse:
-        async with self._client.messages.stream(
-            model=request.system_prompt or "claude-3-5-sonnet-20241022",
-            max_tokens=request.max_tokens,
-            temperature=request.temperature,
-            messages=[{"role": "user", "content": request.prompt}],
-        ) as stream:
+        model = request.model or DEFAULT_CLAUDE_MODEL
+        kwargs = {
+            "model": model,
+            "max_tokens": request.max_tokens,
+            "temperature": request.temperature,
+            "messages": [{"role": "user", "content": request.prompt}],
+        }
+        if request.system_prompt:
+            kwargs["system"] = request.system_prompt
+
+        async with self._client.messages.stream(**kwargs) as stream:
             async for text in stream.text_stream:
                 callback(text)
 
@@ -79,34 +128,44 @@ class OpenAIAdapter(AIProviderPort):
         self._client = openai.AsyncOpenAI(api_key=self._api_key)
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        model = request.model or DEFAULT_OPENAI_MODEL
+        messages = []
+        if request.system_prompt:
+            messages.append({"role": "system", "content": request.system_prompt})
+        messages.extend(_build_messages(request))
+
         response = await self._client.chat.completions.create(
-            model=request.system_prompt or "gpt-4o",
+            model=model,
             max_tokens=request.max_tokens,
             temperature=request.temperature,
-            messages=[
-                {"role": "system", "content": request.system_prompt or ""},
-                {"role": "user", "content": request.prompt},
-            ],
+            messages=messages,
         )
 
+        content = response.choices[0].message.content or ""
+        schema_valid = _validate_output(request, content)
+
         return CompletionResponse(
-            content=response.choices[0].message.content or "",
+            content=content,
             tokens_used=response.usage.total_tokens,
             model=response.model,
             finish_reason=response.choices[0].finish_reason or "stop",
+            schema_valid=schema_valid,
         )
 
     async def stream_complete(
         self, request: CompletionRequest, callback
     ) -> CompletionResponse:
+        model = request.model or DEFAULT_OPENAI_MODEL
+        messages = []
+        if request.system_prompt:
+            messages.append({"role": "system", "content": request.system_prompt})
+        messages.append({"role": "user", "content": request.prompt})
+
         response = await self._client.chat.completions.create(
-            model=request.system_prompt or "gpt-4o",
+            model=model,
             max_tokens=request.max_tokens,
             temperature=request.temperature,
-            messages=[
-                {"role": "system", "content": request.system_prompt or ""},
-                {"role": "user", "content": request.prompt},
-            ],
+            messages=messages,
             stream=True,
         )
 
@@ -120,7 +179,7 @@ class OpenAIAdapter(AIProviderPort):
         return CompletionResponse(
             content=content,
             tokens_used=0,
-            model=request.system_prompt or "gpt-4o",
+            model=model,
             finish_reason="stop",
         )
 
@@ -133,7 +192,11 @@ class GeminiAdapter(AIProviderPort):
         genai.configure(api_key=self._api_key)
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
-        model = genai.GenerativeModel(request.system_prompt or "gemini-1.5-pro")
+        model_name = request.model or DEFAULT_GEMINI_MODEL
+        model = genai.GenerativeModel(
+            model_name,
+            system_instruction=request.system_prompt or None,
+        )
 
         response = await model.generate_content_async(
             request.prompt,
@@ -143,17 +206,25 @@ class GeminiAdapter(AIProviderPort):
             },
         )
 
+        content = response.text
+        schema_valid = _validate_output(request, content)
+
         return CompletionResponse(
-            content=response.text,
+            content=content,
             tokens_used=0,
             model=model.model_name,
             finish_reason="stop",
+            schema_valid=schema_valid,
         )
 
     async def stream_complete(
         self, request: CompletionRequest, callback
     ) -> CompletionResponse:
-        model = genai.GenerativeModel(request.system_prompt or "gemini-1.5-pro")
+        model_name = request.model or DEFAULT_GEMINI_MODEL
+        model = genai.GenerativeModel(
+            model_name,
+            system_instruction=request.system_prompt or None,
+        )
 
         response = await model.generate_content_async(
             request.prompt,
@@ -199,6 +270,7 @@ Context: {context}"""
             request = CompletionRequest(
                 agent_id=agent.id,
                 prompt=task,
+                model=agent.config.model,
                 system_prompt=system_prompt,
                 max_tokens=agent.config.max_tokens,
                 temperature=agent.config.temperature,

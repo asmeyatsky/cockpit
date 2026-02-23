@@ -3,12 +3,16 @@ Resource MCP Server
 
 Architectural Intent:
 - Exposes infrastructure resource management via MCP protocol
-- Tools = write operations, Resources = read operations
+- Tools = write operations, Resources = read operations, Prompts = patterns
 
 MCP Integration:
 - Server name: infrastructure-resource-service
 - Tools: create_resource, start_resource, stop_resource, terminate_resource
 - Resources: resource://{resource_id}, resource://list
+- Prompts: resource_health_report
+
+Parallelization Strategy:
+- Resource operations on different resources are independent and can run concurrently
 """
 
 from mcp.server import Server
@@ -109,5 +113,17 @@ def create_resource_server(
         import json
 
         return json.dumps(resources)
+
+    @server.prompt()
+    async def resource_health_report() -> str:
+        """Generate a resource health report prompt for AI analysis."""
+        resources = await list_resources_query.execute()
+        lines = ["Analyze the following infrastructure resource inventory:\n"]
+        for r in resources:
+            lines.append(f"- {r.get('name', 'unknown')} ({r.get('resource_type', '?')}): "
+                         f"state={r.get('state', '?')}, region={r.get('region', '?')}")
+        lines.append("\nProvide: 1) Health overview 2) Resources needing attention "
+                     "3) Scaling recommendations 4) Cost implications")
+        return "\n".join(lines)
 
     return server

@@ -14,9 +14,12 @@ from uuid import UUID
 from application.commands.commands import (
     CreateCloudProviderUseCase,
     ConnectProviderUseCase,
+    DisconnectProviderUseCase,
     CreateResourceUseCase,
     ManageResourceUseCase,
     CreateAgentUseCase,
+    ActivateAgentUseCase,
+    DeactivateAgentUseCase,
     AnalyzeCostUseCase,
 )
 from application.queries.queries import (
@@ -41,11 +44,13 @@ class CloudProviderController:
         self,
         create_provider_use_case: CreateCloudProviderUseCase,
         connect_provider_use_case: ConnectProviderUseCase,
+        disconnect_provider_use_case: DisconnectProviderUseCase,
         get_provider_query: GetCloudProviderQuery,
         list_providers_query: ListCloudProvidersQuery,
     ):
         self._create = create_provider_use_case
         self._connect = connect_provider_use_case
+        self._disconnect = disconnect_provider_use_case
         self._get = get_provider_query
         self._list = list_providers_query
 
@@ -64,9 +69,8 @@ class CloudProviderController:
         return APIResponse(success=result.success, data=result.data, error=result.error)
 
     async def disconnect(self, provider_id: str) -> APIResponse:
-        return APIResponse(
-            success=True, data={"message": f"Provider {provider_id} disconnected"}
-        )
+        result = await self._disconnect.execute(provider_id)
+        return APIResponse(success=result.success, data=result.data, error=result.error)
 
     async def get(self, provider_id: str) -> APIResponse:
         provider = await self._get.execute(provider_id)
@@ -138,10 +142,14 @@ class AgentController:
     def __init__(
         self,
         create_agent_use_case: CreateAgentUseCase,
+        activate_agent_use_case: ActivateAgentUseCase,
+        deactivate_agent_use_case: DeactivateAgentUseCase,
         get_agent_query: GetAgentQuery,
         list_agents_query: ListAgentsQuery,
     ):
         self._create = create_agent_use_case
+        self._activate = activate_agent_use_case
+        self._deactivate = deactivate_agent_use_case
         self._get = get_agent_query
         self._list = list_agents_query
 
@@ -161,14 +169,12 @@ class AgentController:
         return APIResponse(success=result.success, data=result.data, error=result.error)
 
     async def activate(self, agent_id: str) -> APIResponse:
-        return APIResponse(
-            success=True, data={"message": f"Agent {agent_id} activated"}
-        )
+        result = await self._activate.execute(agent_id)
+        return APIResponse(success=result.success, data=result.data, error=result.error)
 
     async def deactivate(self, agent_id: str) -> APIResponse:
-        return APIResponse(
-            success=True, data={"message": f"Agent {agent_id} deactivated"}
-        )
+        result = await self._deactivate.execute(agent_id)
+        return APIResponse(success=result.success, data=result.data, error=result.error)
 
     async def get(self, agent_id: str) -> APIResponse:
         agent = await self._get.execute(agent_id)

@@ -4,12 +4,16 @@ Cloud Provider MCP Server
 Architectural Intent:
 - Exposes cloud provider capabilities via MCP protocol
 - Each bounded context has exactly one MCP server
-- Tools = write operations, Resources = read operations
+- Tools = write operations, Resources = read operations, Prompts = patterns
 
 MCP Integration:
 - Server name: cloud-provider-service
 - Tools: create_provider, connect_provider, disconnect_provider, delete_provider
 - Resources: provider://{provider_id}, provider://list
+- Prompts: provider_status_report
+
+Parallelization Strategy:
+- Provider operations are independent; multiple can be created/connected concurrently
 """
 
 from mcp.server import Server
@@ -19,6 +23,7 @@ from pydantic import BaseModel
 from application.commands.commands import (
     CreateCloudProviderUseCase,
     ConnectProviderUseCase,
+    DisconnectProviderUseCase,
 )
 from application.queries.queries import (
     GetCloudProviderQuery,
@@ -40,6 +45,7 @@ class ConnectProviderInput(BaseModel):
 def create_cloud_provider_server(
     create_provider_use_case: CreateCloudProviderUseCase,
     connect_provider_use_case: ConnectProviderUseCase,
+    disconnect_provider_use_case: DisconnectProviderUseCase,
     get_provider_query: GetCloudProviderQuery,
     list_providers_query: ListCloudProvidersQuery,
 ) -> Server:
@@ -71,12 +77,18 @@ def create_cloud_provider_server(
     @server.tool()
     async def disconnect_provider(provider_id: str) -> dict:
         """Disconnect from a cloud provider."""
-        return {"success": True, "message": f"Provider {provider_id} disconnected"}
+        result = await disconnect_provider_use_case.execute(provider_id)
+        if result.success:
+            return {"success": True, "data": result.data}
+        return {"success": False, "error": result.error}
 
     @server.tool()
     async def delete_provider(provider_id: str) -> dict:
         """Delete a cloud provider connection."""
-        return {"success": True, "message": f"Provider {provider_id} deleted"}
+        result = await disconnect_provider_use_case.execute(provider_id)
+        if result.success:
+            return {"success": True, "data": result.data}
+        return {"success": False, "error": result.error}
 
     @server.resource("provider://{provider_id}")
     async def get_provider(provider_id: str) -> str:
@@ -93,5 +105,16 @@ def create_cloud_provider_server(
         import json
 
         return json.dumps(providers)
+
+    @server.prompt()
+    async def provider_status_report() -> str:
+        """Generate a provider status report prompt for AI analysis."""
+        providers = await list_providers_query.execute()
+        lines = ["Analyze the following cloud provider inventory and provide recommendations:\n"]
+        for p in providers:
+            lines.append(f"- {p.get('name', 'unknown')} ({p.get('provider_type', '?')}): "
+                         f"status={p.get('status', '?')}, region={p.get('region', '?')}")
+        lines.append("\nProvide: 1) Health summary 2) Risk assessment 3) Optimization suggestions")
+        return "\n".join(lines)
 
     return server

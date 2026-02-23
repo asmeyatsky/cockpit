@@ -33,3 +33,9 @@ class Credentials:
         elif self.auth_type == "iam_role":
             return bool(self.access_key)
         return False
+
+    def __repr__(self) -> str:
+        return f"Credentials(auth_type={self.auth_type!r}, **REDACTED**)"
+
+    def __str__(self) -> str:
+        return self.__repr__()

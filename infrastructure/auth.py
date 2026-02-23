@@ -5,10 +5,11 @@ Architectural Intent:
 - JWT-based authentication
 - Role-based access control (RBAC)
 - API key authentication for service accounts
+- bcrypt password hashing for security
 """
 
 import os
-import jwt
+import hmac
 import hashlib
 import secrets
 from datetime import datetime, timedelta, UTC
@@ -17,6 +18,15 @@ from dataclasses import dataclass
 from enum import Enum
 
 from pydantic import BaseModel
+
+try:
+    import bcrypt
+
+    _HAS_BCRYPT = True
+except ImportError:
+    _HAS_BCRYPT = False
+
+import jwt
 
 
 class Role(Enum):
@@ -87,9 +97,14 @@ class TokenData:
 
 class AuthService:
     def __init__(self, secret_key: Optional[str] = None):
-        self._secret_key = secret_key or os.environ.get(
-            "COCKPIT_SECRET_KEY", secrets.token_urlsafe(32)
-        )
+        self._secret_key = secret_key or os.environ.get("COCKPIT_SECRET_KEY")
+        if not self._secret_key:
+            self._secret_key = secrets.token_urlsafe(32)
+            import logging
+            logging.getLogger(__name__).warning(
+                "COCKPIT_SECRET_KEY not set — using ephemeral key. "
+                "Tokens will not survive restarts. Set COCKPIT_SECRET_KEY in production."
+            )
         self._algorithm = "HS256"
         self._users: dict[str, User] = {}
 
@@ -156,15 +171,33 @@ class AuthService:
         if not api_key.startswith("ck_"):
             return None
         for user in self._users.values():
-            if user.api_key == api_key:
+            if user.api_key and hmac.compare_digest(user.api_key, api_key):
                 return user
         return None
 
     def _hash_password(self, password: str) -> str:
-        return hashlib.sha256(password.encode()).hexdigest()
+        if _HAS_BCRYPT:
+            return bcrypt.hashpw(
+                password.encode("utf-8"), bcrypt.gensalt()
+            ).decode("utf-8")
+        # Fallback: PBKDF2 with SHA-256 (stdlib, no extra dependency)
+        salt = secrets.token_hex(16)
+        dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode(), 600_000)
+        return f"pbkdf2:{salt}:{dk.hex()}"
 
     def _verify_password(self, password: str, hashed: str) -> bool:
-        return self._hash_password(password) == hashed
+        if _HAS_BCRYPT and hashed.startswith("$2"):
+            return bcrypt.checkpw(
+                password.encode("utf-8"), hashed.encode("utf-8")
+            )
+        if hashed.startswith("pbkdf2:"):
+            _, salt, stored_hash = hashed.split(":", 2)
+            dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode(), 600_000)
+            return hmac.compare_digest(dk.hex(), stored_hash)
+        # Legacy SHA-256 fallback for existing hashes
+        return hmac.compare_digest(
+            hashlib.sha256(password.encode()).hexdigest(), hashed
+        )
 
 
 class AuthorizationService:

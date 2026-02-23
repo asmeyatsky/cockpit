@@ -10,12 +10,16 @@ Parallelization Strategy:
 - Steps with no dependencies run concurrently
 - Steps with satisfied dependencies run concurrently
 - Results aggregated for dependent steps
+- Backpressure via configurable max_concurrency semaphore (5.5)
 """
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import Callable, Any
 from enum import Enum
+
+logger = logging.getLogger(__name__)
 
 
 class StepStatus(Enum):
@@ -46,10 +50,15 @@ class DAGOrchestrator:
     """
     Executes workflow steps respecting dependency order,
     parallelizing independent steps automatically.
+
+    Backpressure (5.5): max_concurrency limits how many steps
+    run in parallel, preventing resource exhaustion.
     """
 
-    def __init__(self, steps: list[WorkflowStep]):
+    def __init__(self, steps: list[WorkflowStep], max_concurrency: int = 10):
         self.steps = {s.name: s for s in steps}
+        self._semaphore = asyncio.Semaphore(max_concurrency)
+        self._max_concurrency = max_concurrency
         self._validate_no_cycles()
 
     def _validate_no_cycles(self) -> None:
@@ -86,7 +95,7 @@ class DAGOrchestrator:
                 raise RuntimeError("Circular dependency detected")
 
             results = await asyncio.gather(
-                *(self._execute_step(name, context, completed) for name in ready),
+                *(self._execute_step_with_backpressure(name, context, completed) for name in ready),
                 return_exceptions=True,
             )
 
@@ -102,6 +111,16 @@ class DAGOrchestrator:
                 pending.discard(name)
 
         return completed
+
+    async def _execute_step_with_backpressure(
+        self,
+        name: str,
+        context: dict,
+        completed: dict[str, StepResult],
+    ) -> StepResult:
+        """5.5: Wrap step execution with semaphore for backpressure."""
+        async with self._semaphore:
+            return await self._execute_step(name, context, completed)
 
     async def _execute_step(
         self,
@@ -126,6 +145,7 @@ class DAGOrchestrator:
             )
 
             duration = time.time() - start
+            logger.debug("Step '%s' completed in %.2fs", name, duration)
             return StepResult(
                 name=name,
                 status=StepStatus.COMPLETED,
@@ -135,6 +155,7 @@ class DAGOrchestrator:
 
         except asyncio.TimeoutError:
             duration = time.time() - start
+            logger.warning("Step '%s' timed out after %.1fs", name, step.timeout)
             return StepResult(
                 name=name,
                 status=StepStatus.FAILED,
@@ -143,6 +164,7 @@ class DAGOrchestrator:
             )
         except Exception as e:
             duration = time.time() - start
+            logger.error("Step '%s' failed: %s", name, e)
             return StepResult(
                 name=name,
                 status=StepStatus.FAILED,

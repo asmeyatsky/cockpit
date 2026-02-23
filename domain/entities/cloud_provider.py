@@ -22,6 +22,8 @@ from enum import Enum
 from typing import Literal
 from uuid import UUID, uuid4
 
+from domain.exceptions import DomainError
+
 
 class CloudProviderType(Enum):
     AWS = "aws"
@@ -103,5 +105,5 @@ class ProviderErrorEvent:
     occurred_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
-class DomainError(Exception):
-    pass
+__all__ = ["CloudProvider", "CloudProviderType", "ProviderStatus",
+           "ProviderConnectedEvent", "ProviderDisconnectedEvent", "ProviderErrorEvent"]

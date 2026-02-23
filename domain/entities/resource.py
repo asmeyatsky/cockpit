@@ -17,6 +17,8 @@ from datetime import datetime, UTC
 from enum import Enum
 from uuid import UUID, uuid4
 
+from domain.exceptions import DomainError
+
 
 class ResourceType(Enum):
     COMPUTE_INSTANCE = "compute_instance"
@@ -123,5 +125,4 @@ class ResourceStateChangedEvent:
     occurred_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
-class DomainError(Exception):
-    pass
+__all__ = ["Resource", "ResourceType", "ResourceState", "ResourceStateChangedEvent"]

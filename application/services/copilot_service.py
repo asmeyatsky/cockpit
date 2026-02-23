@@ -13,10 +13,12 @@ import re
 from typing import Optional
 from dataclasses import dataclass
 
+import logging
+
 import anthropic
 import openai
 
-from infrastructure.config.dependency_injection import get_container
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -28,10 +30,11 @@ class ActionResult:
 
 
 class AICopilotService:
-    def __init__(self):
+    def __init__(self, container=None):
         self._claude_client = None
         self._openai_client = None
         self._provider = os.environ.get("AI_PROVIDER", "claude")
+        self._container = container
 
     def _get_claude_client(self):
         if not self._claude_client:
@@ -47,7 +50,7 @@ class AICopilotService:
                 self._openai_client = openai.AsyncOpenAI(api_key=api_key)
         return self._openai_client
 
-    async def process_command(self, user_message: str) -> ActionResult:
+    async def process_command(self, user_message: str, history: list[dict] | None = None) -> ActionResult:
         user_lower = user_message.lower()
 
         if any(kw in user_lower for kw in ["create", "add", "new provider"]):
@@ -68,7 +71,7 @@ class AICopilotService:
                 message="I can help you with:\n\n• Creating cloud providers (AWS, Azure, GCP)\n• Starting, stopping, or terminating resources\n• Viewing costs and budgets\n• Listing your resources and providers\n• Creating new instances\n\nJust tell me what you want to do!",
             )
 
-        return await self._handle_intelligent_response(user_message)
+        return await self._handle_intelligent_response(user_message, history=history)
 
     async def _handle_create_provider(self, message: str) -> ActionResult:
         provider_type = None
@@ -96,7 +99,7 @@ class AICopilotService:
         elif "europe" in message.lower() or "eu" in message.lower():
             region = "eu-west-1"
 
-        container = get_container()
+        container = self._container
         use_case = container.create_cloud_provider_use_case()
         result = await use_case.execute(
             provider_type=provider_type,
@@ -114,7 +117,7 @@ class AICopilotService:
         return ActionResult(success=False, message=f"Failed: {result.error}")
 
     async def _handle_resource_action(self, message: str) -> ActionResult:
-        container = get_container()
+        container = self._container
 
         action = None
         if "start" in message.lower():
@@ -168,7 +171,7 @@ class AICopilotService:
         )
 
     async def _handle_cost_query(self, message: str) -> ActionResult:
-        container = get_container()
+        container = self._container
 
         providers = await container.list_cloud_providers_query().execute()
 
@@ -197,7 +200,7 @@ class AICopilotService:
         return ActionResult(success=False, message="Could not fetch cost data.")
 
     async def _handle_query(self, message: str) -> ActionResult:
-        container = get_container()
+        container = self._container
 
         if "provider" in message.lower():
             providers = await container.list_cloud_providers_query().execute()
@@ -222,27 +225,38 @@ class AICopilotService:
             message="You have providers and resources configured. What would you like to see?",
         )
 
-    async def _handle_intelligent_response(self, message: str) -> ActionResult:
+    async def _handle_intelligent_response(self, message: str, history: list[dict] | None = None) -> ActionResult:
         client = (
             self._get_claude_client()
             if self._provider == "claude"
             else self._get_openai_client()
         )
 
-        system_prompt = """You are an AI assistant for a cloud infrastructure management platform called Cockpit. 
+        system_prompt = """You are an AI assistant for a cloud infrastructure management platform called Cockpit.
 You help users manage their AWS, Azure, and GCP resources through natural conversation.
 
 Keep responses concise and friendly. Format with **bold** for important terms.
 If you need more information, ask clear questions.
 If something goes wrong, explain the issue simply."""
 
+        # 2.13: Build conversation messages from history
+        conversation: list[dict] = []
+        if history:
+            for msg in history[-10:]:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if role in ("user", "assistant") and content:
+                    conversation.append({"role": role, "content": content})
+        if not conversation or conversation[-1].get("content") != message:
+            conversation.append({"role": "user", "content": message})
+
         try:
             if client and self._provider == "claude":
                 response = await client.messages.create(
-                    model="claude-3-5-sonnet-20241022",
+                    model="claude-sonnet-4-6",
                     max_tokens=500,
                     system=system_prompt,
-                    messages=[{"role": "user", "content": message}],
+                    messages=conversation,
                 )
                 return ActionResult(success=True, message=response.content[0].text)
 
@@ -252,14 +266,14 @@ If something goes wrong, explain the issue simply."""
                     max_tokens=500,
                     messages=[
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": message},
+                        *conversation,
                     ],
                 )
                 return ActionResult(
                     success=True, message=response.choices[0].message.content
                 )
         except Exception as e:
-            pass
+            logger.error("AI provider error: %s", e, exc_info=True)
 
         return ActionResult(
             success=True,
@@ -270,8 +284,8 @@ If something goes wrong, explain the issue simply."""
 _copilot_service: Optional[AICopilotService] = None
 
 
-def get_copilot_service() -> AICopilotService:
+def get_copilot_service(container=None) -> AICopilotService:
     global _copilot_service
     if _copilot_service is None:
-        _copilot_service = AICopilotService()
+        _copilot_service = AICopilotService(container=container)
     return _copilot_service

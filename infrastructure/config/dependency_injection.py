@@ -25,9 +25,12 @@ from domain.ports.event_bus_port import EventBusPort, DomainEvent
 from application.commands.commands import (
     CreateCloudProviderUseCase,
     ConnectProviderUseCase,
+    DisconnectProviderUseCase,
     CreateResourceUseCase,
     ManageResourceUseCase,
     CreateAgentUseCase,
+    ActivateAgentUseCase,
+    DeactivateAgentUseCase,
     AnalyzeCostUseCase,
 )
 from application.queries.queries import (
@@ -152,6 +155,24 @@ class Container:
     def create_agent_use_case(self) -> CreateAgentUseCase:
         return CreateAgentUseCase(
             agent_repo=self._agent_repo,
+            event_bus=self._event_bus,
+        )
+
+    def create_activate_agent_use_case(self) -> ActivateAgentUseCase:
+        return ActivateAgentUseCase(
+            agent_repo=self._agent_repo,
+            event_bus=self._event_bus,
+        )
+
+    def create_deactivate_agent_use_case(self) -> DeactivateAgentUseCase:
+        return DeactivateAgentUseCase(
+            agent_repo=self._agent_repo,
+            event_bus=self._event_bus,
+        )
+
+    def create_disconnect_provider_use_case(self) -> DisconnectProviderUseCase:
+        return DisconnectProviderUseCase(
+            provider_repo=self._provider_repo,
             event_bus=self._event_bus,
         )
 

@@ -9,6 +9,10 @@ MCP Integration:
 - Server name: cost-service
 - Tools: analyze_costs, get_forecast, get_budget_status
 - Resources: cost://{provider_id}/summary
+- Prompts: cost_optimization_report
+
+Parallelization Strategy:
+- Cost analysis across multiple providers can run concurrently
 """
 
 from mcp.server import Server
@@ -111,5 +115,18 @@ def create_cost_server(
                 },
             }
         )
+
+    @server.prompt()
+    async def cost_optimization_report(provider_id: str = "") -> str:
+        """Generate a cost optimization report prompt for AI analysis."""
+        lines = [
+            "Analyze the following cloud cost data and provide optimization recommendations:\n",
+            f"Provider: {provider_id or 'all'}",
+            "Current month spend: $1,234.56",
+            "Breakdown: Compute $500, Storage $200, Network $100, Other $434.56",
+            "\nProvide: 1) Cost anomalies 2) Optimization opportunities 3) Forecasting insights "
+            "4) Right-sizing recommendations",
+        ]
+        return "\n".join(lines)
 
     return server
