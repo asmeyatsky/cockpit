@@ -41,9 +41,19 @@ app = FastAPI(
     version="1.0.0",
 )
 
+
+@app.on_event("startup")
+async def create_default_admin():
+    """Create a default admin user for development."""
+    from infrastructure.auth import Role
+    auth = get_auth_service()
+    if not auth._users:
+        auth.create_user("admin", "admin@cockpit.local", "admin", role=Role.ADMIN)
+        logger.info("Created default admin user (admin/admin) — change in production!")
+
 # 3.3: CORS — restricted to configured origins (defaults to localhost dev)
 ALLOWED_ORIGINS = os.environ.get(
-    "COCKPIT_CORS_ORIGINS", "http://localhost:3000"
+    "COCKPIT_CORS_ORIGINS", "http://localhost:3000,http://localhost:3001,http://localhost:3005"
 ).split(",")
 
 app.add_middleware(

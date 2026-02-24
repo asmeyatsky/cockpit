@@ -14,6 +14,12 @@ import axios from 'axios';
 const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
 const WS_BASE = process.env.REACT_APP_WS_URL || 'ws://localhost:8000';
 
+// Auth: configure axios to send JWT token with every request
+const token = localStorage.getItem('cockpit_token');
+if (token) {
+  axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+}
+
 interface Provider {
   id: string;
   provider_type: string;
@@ -227,7 +233,8 @@ function Dashboard({ addToast }: { addToast: (type: Notification['type'], msg: s
   useEffect(() => {
     fetchData();
 
-    const ws = new WebSocket(`${WS_BASE}/ws`);
+    const wsToken = localStorage.getItem('cockpit_token');
+    const ws = new WebSocket(`${WS_BASE}/ws${wsToken ? `?token=${wsToken}` : ''}`);
 
     ws.onmessage = (event) => {
       try {
@@ -1075,7 +1082,8 @@ function AICopilot() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const websocket = new WebSocket(`${WS_BASE}/ws/copilot`);
+    const wsToken = localStorage.getItem('cockpit_token');
+    const websocket = new WebSocket(`${WS_BASE}/ws/copilot${wsToken ? `?token=${wsToken}` : ''}`);
 
     websocket.onopen = () => {
       console.log('Connected to AI copilot');
@@ -1253,14 +1261,125 @@ function AICopilot() {
   );
 }
 
+function LoginPage({ onLogin }: { onLogin: (token: string, user: any) => void }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      const res = await axios.post(`${API_BASE}/auth/login`, { username, password });
+      const { token, user } = res.data;
+      localStorage.setItem('cockpit_token', token);
+      localStorage.setItem('cockpit_user', JSON.stringify(user));
+      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+      onLogin(token, user);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || 'Login failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{
+      minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'var(--bg-primary)',
+    }}>
+      <div style={{ width: 400 }}>
+        <div style={{ textAlign: 'center', marginBottom: 32 }}>
+          <h1 style={{
+            fontSize: 36, fontWeight: 700,
+            background: 'var(--gradient)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
+          }}>
+            Cockpit
+          </h1>
+          <p style={{ color: 'var(--text-secondary)', marginTop: 8 }}>
+            Agentic Cloud Modernization Platform
+          </p>
+        </div>
+        <div className="card">
+          <h3 className="card-title" style={{ marginBottom: 20 }}>Sign In</h3>
+          <form onSubmit={handleSubmit}>
+            <div className="form-group">
+              <label className="form-label" htmlFor="login-user">Username</label>
+              <input
+                id="login-user" className="form-input" value={username}
+                onChange={e => setUsername(e.target.value)}
+                placeholder="admin" required autoFocus
+              />
+            </div>
+            <div className="form-group">
+              <label className="form-label" htmlFor="login-pass">Password</label>
+              <input
+                id="login-pass" className="form-input" type="password" value={password}
+                onChange={e => setPassword(e.target.value)}
+                placeholder="admin" required
+              />
+            </div>
+            {error && (
+              <p style={{ color: 'var(--error)', fontSize: 14, marginBottom: 16 }}>{error}</p>
+            )}
+            <button
+              type="submit" className="btn btn-primary"
+              style={{ width: '100%', padding: 14 }}
+              disabled={loading}
+            >
+              {loading ? 'Signing in...' : 'Sign In'}
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const { toasts, addToast } = useToast();
+  const [isAuthenticated, setIsAuthenticated] = useState(() => !!localStorage.getItem('cockpit_token'));
+  const [user, setUser] = useState<any>(() => {
+    try { return JSON.parse(localStorage.getItem('cockpit_user') || 'null'); } catch { return null; }
+  });
+
+  const handleLogin = (token: string, userData: any) => {
+    setIsAuthenticated(true);
+    setUser(userData);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('cockpit_token');
+    localStorage.removeItem('cockpit_user');
+    delete axios.defaults.headers.common['Authorization'];
+    setIsAuthenticated(false);
+    setUser(null);
+  };
+
+  if (!isAuthenticated) {
+    return (
+      <>
+        <LoginPage onLogin={handleLogin} />
+        <ToastContainer toasts={toasts} />
+      </>
+    );
+  }
 
   return (
     <BrowserRouter>
       <div className="app">
         <Sidebar />
         <main className="main-content">
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
+            <span style={{ color: 'var(--text-secondary)', marginRight: 12, fontSize: 14, alignSelf: 'center' }}>
+              {user?.username} ({user?.role})
+            </span>
+            <button className="btn btn-secondary" onClick={handleLogout} style={{ fontSize: 13, padding: '6px 14px' }}>
+              Logout
+            </button>
+          </div>
           <Routes>
             <Route path="/" element={<Dashboard addToast={addToast} />} />
             <Route path="/providers" element={<Providers addToast={addToast} />} />
