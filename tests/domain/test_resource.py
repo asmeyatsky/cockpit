@@ -105,7 +105,7 @@ class TestResource:
         failed_resource = resource.fail("Out of memory")
 
         assert failed_resource.state == ResourceState.FAILED
-        assert failed_resource.metadata["error"] == "Out of memory"
+        assert failed_resource.metadata_dict["error"] == "Out of memory"
 
     def test_add_tag(self):
         resource = Resource(
@@ -115,13 +115,13 @@ class TestResource:
             name="web-server",
             state=ResourceState.RUNNING,
             region="us-east-1",
-            tags={},
+            tags=(),
         )
 
         tagged_resource = resource.add_tag("environment", "production")
 
-        assert tagged_resource.tags["environment"] == "production"
-        assert resource.tags == {}
+        assert tagged_resource.tags_dict["environment"] == "production"
+        assert resource.tags == ()
 
     def test_remove_tag(self):
         resource = Resource(
@@ -131,13 +131,13 @@ class TestResource:
             name="web-server",
             state=ResourceState.RUNNING,
             region="us-east-1",
-            tags={"environment": "production", "team": "platform"},
+            tags=(("environment", "production"), ("team", "platform")),
         )
 
         untagged_resource = resource.remove_tag("environment")
 
-        assert "environment" not in untagged_resource.tags
-        assert untagged_resource.tags["team"] == "platform"
+        assert "environment" not in untagged_resource.tags_dict
+        assert untagged_resource.tags_dict["team"] == "platform"
 
     def test_resource_immutability(self):
         resource = Resource(

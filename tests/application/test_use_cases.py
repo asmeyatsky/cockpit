@@ -108,7 +108,7 @@ class TestConnectProviderUseCase:
 
         mock_repo = AsyncMock(spec=CloudProviderRepositoryPort)
         mock_repo.get_by_id.return_value = provider
-        mock_repo.save.return_value = provider.connect()
+        mock_repo.save = AsyncMock(side_effect=lambda p: p)
 
         mock_cloud = AsyncMock(spec=CloudProviderPort)
         mock_cloud.connect.return_value = True
@@ -125,7 +125,7 @@ class TestConnectProviderUseCase:
 
         assert result.success is True
         mock_cloud.connect.assert_awaited_once()
-        mock_repo.save.assert_awaited_once()
+        assert mock_repo.save.await_count == 2  # initial save + clear events save
 
     @pytest.mark.asyncio
     async def test_connect_provider_not_found(self):
@@ -158,21 +158,23 @@ class TestCreateResourceUseCase:
             region="us-east-1",
         )
 
-        resource = Resource(
+        provisioned_resource = Resource(
             id=uuid4(),
             provider_id=provider.id,
             resource_type=ResourceType.COMPUTE_INSTANCE,
-            name="web-server",
+            name="provisioned-server",
             state=ResourceState.RUNNING,
             region="us-east-1",
         )
 
         mock_resource_repo = AsyncMock(spec=ResourceRepositoryPort)
+        # save returns whatever is passed in
+        mock_resource_repo.save = AsyncMock(side_effect=lambda r: r)
         mock_provider_repo = AsyncMock(spec=CloudProviderRepositoryPort)
         mock_provider_repo.get_by_id.return_value = provider
 
         mock_resource_port = AsyncMock(spec=ResourcePort)
-        mock_resource_port.create.return_value = resource
+        mock_resource_port.create.return_value = provisioned_resource
 
         mock_event_bus = AsyncMock(spec=EventBusPort)
 
@@ -192,6 +194,9 @@ class TestCreateResourceUseCase:
         )
 
         assert result.success is True
+        # Verify the saved resource uses the caller's name, not the mock's
+        saved_resource = mock_resource_repo.save.call_args[0][0]
+        assert saved_resource.name == "web-server"
         mock_resource_port.create.assert_awaited_once()
 
     @pytest.mark.asyncio

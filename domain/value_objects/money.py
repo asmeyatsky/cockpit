@@ -46,6 +46,9 @@ class Money:
             return False
         return self.amount == other.amount and self.currency == other.currency
 
+    def __hash__(self) -> int:
+        return hash((self.amount, self.currency))
+
     def format(self) -> str:
         return f"{self.currency} {self.amount:,.2f}"
 

@@ -52,11 +52,19 @@ class Resource:
     state: ResourceState
     region: str
     arn: str | None = None
-    metadata: dict = field(default_factory=dict)
-    tags: dict = field(default_factory=dict)
+    metadata: tuple = field(default_factory=tuple)  # tuple of (key, value) pairs for immutability
+    tags: tuple = field(default_factory=tuple)  # tuple of (key, value) pairs for immutability
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     domain_events: tuple = field(default_factory=tuple)
+
+    @property
+    def metadata_dict(self) -> dict:
+        return dict(self.metadata)
+
+    @property
+    def tags_dict(self) -> dict:
+        return dict(self.tags)
 
     def start(self) -> "Resource":
         if self.state != ResourceState.STOPPED:
@@ -92,24 +100,30 @@ class Resource:
         )
 
     def fail(self, error: str) -> "Resource":
+        new_metadata = tuple(
+            (k, v) for k, v in self.metadata if k != "error"
+        ) + (("error", error),)
         return replace(
             self,
             state=ResourceState.FAILED,
             updated_at=datetime.now(UTC),
-            metadata={**self.metadata, "error": error},
+            metadata=new_metadata,
             domain_events=self.domain_events
             + (ResourceStateChangedEvent(self.id, ResourceState.FAILED, error),),
         )
 
     def add_tag(self, key: str, value: str) -> "Resource":
+        new_tags = tuple(
+            (k, v) for k, v in self.tags if k != key
+        ) + ((key, value),)
         return replace(
             self,
-            tags={**self.tags, key: value},
+            tags=new_tags,
             updated_at=datetime.now(UTC),
         )
 
     def remove_tag(self, key: str) -> "Resource":
-        new_tags = {k: v for k, v in self.tags.items() if k != key}
+        new_tags = tuple((k, v) for k, v in self.tags if k != key)
         return replace(
             self,
             tags=new_tags,

@@ -13,6 +13,7 @@ import os
 import logging
 import time
 from collections import defaultdict
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,7 +25,7 @@ import json
 import asyncio
 
 from infrastructure.config.dependency_injection import get_container
-from infrastructure.auth import get_auth_service, get_authorization_service, TokenData, Permission
+from infrastructure.auth import get_auth_service, get_authorization_service, TokenData, Permission, Role
 from presentation.api.controllers import (
     CloudProviderController,
     ResourceController,
@@ -35,21 +36,32 @@ from application.services.copilot_service import get_copilot_service
 
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan: startup and shutdown logic."""
+    # Startup: only create default admin in dev mode
+    if os.environ.get("COCKPIT_ENV", "development") == "development":
+        auth = get_auth_service()
+        if not auth._users:
+            default_password = os.environ.get("COCKPIT_ADMIN_PASSWORD", "admin")
+            auth.create_user("admin", "admin@cockpit.local", default_password, role=Role.ADMIN)
+            if default_password == "admin":
+                logger.warning(
+                    "Created default admin user with INSECURE password. "
+                    "Set COCKPIT_ADMIN_PASSWORD or COCKPIT_ENV=production in production!"
+                )
+            else:
+                logger.info("Created default admin user with custom password.")
+    yield
+
+
 app = FastAPI(
     title="Cockpit API",
     description="Agentic Cloud Modernization Platform",
     version="1.0.0",
+    lifespan=lifespan,
 )
-
-
-@app.on_event("startup")
-async def create_default_admin():
-    """Create a default admin user for development."""
-    from infrastructure.auth import Role
-    auth = get_auth_service()
-    if not auth._users:
-        auth.create_user("admin", "admin@cockpit.local", "admin", role=Role.ADMIN)
-        logger.info("Created default admin user (admin/admin) — change in production!")
 
 # 3.3: CORS — restricted to configured origins (defaults to localhost dev)
 ALLOWED_ORIGINS = os.environ.get(
@@ -64,15 +76,29 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
-# 3.6: Simple in-memory rate limiter
+# 3.6: Simple in-memory rate limiter with eviction
 _rate_limit_store: dict[str, list[float]] = defaultdict(list)
+_rate_limit_last_eviction: float = 0.0
 RATE_LIMIT_WINDOW = 60  # seconds
 RATE_LIMIT_MAX_REQUESTS = 120  # per window
+_RATE_LIMIT_EVICTION_INTERVAL = 300  # evict stale IPs every 5 minutes
 
 
 async def rate_limit(request: Request):
+    global _rate_limit_last_eviction
     client_ip = request.client.host if request.client else "unknown"
     now = time.time()
+
+    # Periodic eviction of stale IP entries to prevent memory leak
+    if now - _rate_limit_last_eviction > _RATE_LIMIT_EVICTION_INTERVAL:
+        stale_ips = [
+            ip for ip, timestamps in _rate_limit_store.items()
+            if not timestamps or now - timestamps[-1] > RATE_LIMIT_WINDOW
+        ]
+        for ip in stale_ips:
+            del _rate_limit_store[ip]
+        _rate_limit_last_eviction = now
+
     _rate_limit_store[client_ip] = [
         t for t in _rate_limit_store[client_ip] if now - t < RATE_LIMIT_WINDOW
     ]
@@ -105,6 +131,23 @@ async def require_auth(
     if not user:
         raise HTTPException(status_code=401, detail="Authentication required")
     return user
+
+
+def require_permission(*permissions: Permission):
+    """Factory for permission-checking dependencies. Enforces RBAC on endpoints."""
+    from infrastructure.auth import ROLE_PERMISSIONS
+
+    async def check(user: TokenData = Depends(require_auth)) -> TokenData:
+        user_permissions = ROLE_PERMISSIONS.get(user.role, [])
+        for perm in permissions:
+            if perm not in user_permissions:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Missing required permission: {perm.value}",
+                )
+        return user
+
+    return check
 
 
 # --- Controller factories ---
@@ -203,7 +246,7 @@ class LoginRequest(BaseModel):
     password: str
 
 
-@app.post("/api/auth/login")
+@app.post("/api/auth/login", dependencies=[Depends(rate_limit)])
 async def login(request: LoginRequest):
     auth_service = get_auth_service()
     user = auth_service.authenticate(request.username, request.password)
@@ -218,7 +261,7 @@ async def login(request: LoginRequest):
 @app.post("/api/providers", dependencies=[Depends(rate_limit)])
 async def create_provider(
     request: CreateProviderRequest,
-    user: TokenData = Depends(require_auth),
+    user: TokenData = Depends(require_permission(Permission.PROVIDER_CREATE)),
     controller: CloudProviderController = Depends(get_provider_controller),
 ):
     result = await controller.create(
@@ -234,7 +277,7 @@ async def create_provider(
 
 @app.get("/api/providers", dependencies=[Depends(rate_limit)])
 async def list_providers(
-    user: TokenData = Depends(require_auth),
+    user: TokenData = Depends(require_permission(Permission.PROVIDER_READ)),
     controller: CloudProviderController = Depends(get_provider_controller),
 ):
     result = await controller.list()
@@ -244,7 +287,7 @@ async def list_providers(
 @app.get("/api/providers/{provider_id}", dependencies=[Depends(rate_limit)])
 async def get_provider(
     provider_id: str,
-    user: TokenData = Depends(require_auth),
+    user: TokenData = Depends(require_permission(Permission.PROVIDER_READ)),
     controller: CloudProviderController = Depends(get_provider_controller),
 ):
     result = await controller.get(provider_id)
@@ -256,7 +299,7 @@ async def get_provider(
 @app.post("/api/providers/{provider_id}/connect", dependencies=[Depends(rate_limit)])
 async def connect_provider(
     provider_id: str,
-    user: TokenData = Depends(require_auth),
+    user: TokenData = Depends(require_permission(Permission.PROVIDER_UPDATE)),
     controller: CloudProviderController = Depends(get_provider_controller),
 ):
     result = await controller.connect(provider_id)
@@ -268,7 +311,7 @@ async def connect_provider(
 @app.post("/api/providers/{provider_id}/disconnect", dependencies=[Depends(rate_limit)])
 async def disconnect_provider(
     provider_id: str,
-    user: TokenData = Depends(require_auth),
+    user: TokenData = Depends(require_permission(Permission.PROVIDER_UPDATE)),
     controller: CloudProviderController = Depends(get_provider_controller),
 ):
     result = await controller.disconnect(provider_id)
@@ -278,7 +321,7 @@ async def disconnect_provider(
 @app.post("/api/resources", dependencies=[Depends(rate_limit)])
 async def create_resource(
     request: CreateResourceRequest,
-    user: TokenData = Depends(require_auth),
+    user: TokenData = Depends(require_permission(Permission.RESOURCE_CREATE)),
     controller: ResourceController = Depends(get_resource_controller),
 ):
     result = await controller.create(
@@ -299,7 +342,7 @@ async def list_resources(
     provider_id: Optional[str] = None,
     resource_type: Optional[str] = None,
     state: Optional[str] = None,
-    user: TokenData = Depends(require_auth),
+    user: TokenData = Depends(require_permission(Permission.RESOURCE_READ)),
     controller: ResourceController = Depends(get_resource_controller),
 ):
     result = await controller.list(provider_id, resource_type, state)
@@ -309,7 +352,7 @@ async def list_resources(
 @app.get("/api/resources/{resource_id}", dependencies=[Depends(rate_limit)])
 async def get_resource(
     resource_id: str,
-    user: TokenData = Depends(require_auth),
+    user: TokenData = Depends(require_permission(Permission.RESOURCE_READ)),
     controller: ResourceController = Depends(get_resource_controller),
 ):
     result = await controller.get(resource_id)
@@ -321,7 +364,7 @@ async def get_resource(
 @app.post("/api/resources/{resource_id}/start", dependencies=[Depends(rate_limit)])
 async def start_resource(
     resource_id: str,
-    user: TokenData = Depends(require_auth),
+    user: TokenData = Depends(require_permission(Permission.RESOURCE_UPDATE)),
     controller: ResourceController = Depends(get_resource_controller),
 ):
     result = await controller.start(resource_id)
@@ -333,7 +376,7 @@ async def start_resource(
 @app.post("/api/resources/{resource_id}/stop", dependencies=[Depends(rate_limit)])
 async def stop_resource(
     resource_id: str,
-    user: TokenData = Depends(require_auth),
+    user: TokenData = Depends(require_permission(Permission.RESOURCE_UPDATE)),
     controller: ResourceController = Depends(get_resource_controller),
 ):
     result = await controller.stop(resource_id)
@@ -345,7 +388,7 @@ async def stop_resource(
 @app.post("/api/resources/{resource_id}/terminate", dependencies=[Depends(rate_limit)])
 async def terminate_resource(
     resource_id: str,
-    user: TokenData = Depends(require_auth),
+    user: TokenData = Depends(require_permission(Permission.RESOURCE_DELETE)),
     controller: ResourceController = Depends(get_resource_controller),
 ):
     result = await controller.terminate(resource_id)
@@ -357,7 +400,7 @@ async def terminate_resource(
 @app.post("/api/agents", dependencies=[Depends(rate_limit)])
 async def create_agent(
     request: CreateAgentRequest,
-    user: TokenData = Depends(require_auth),
+    user: TokenData = Depends(require_permission(Permission.AGENT_CREATE)),
     controller: AgentController = Depends(get_agent_controller),
 ):
     result = await controller.create(
@@ -376,7 +419,7 @@ async def create_agent(
 
 @app.get("/api/agents", dependencies=[Depends(rate_limit)])
 async def list_agents(
-    user: TokenData = Depends(require_auth),
+    user: TokenData = Depends(require_permission(Permission.AGENT_READ)),
     controller: AgentController = Depends(get_agent_controller),
 ):
     result = await controller.list()
@@ -386,7 +429,7 @@ async def list_agents(
 @app.get("/api/agents/{agent_id}", dependencies=[Depends(rate_limit)])
 async def get_agent(
     agent_id: str,
-    user: TokenData = Depends(require_auth),
+    user: TokenData = Depends(require_permission(Permission.AGENT_READ)),
     controller: AgentController = Depends(get_agent_controller),
 ):
     result = await controller.get(agent_id)
@@ -398,7 +441,7 @@ async def get_agent(
 @app.post("/api/agents/{agent_id}/activate", dependencies=[Depends(rate_limit)])
 async def activate_agent(
     agent_id: str,
-    user: TokenData = Depends(require_auth),
+    user: TokenData = Depends(require_permission(Permission.AGENT_UPDATE)),
     controller: AgentController = Depends(get_agent_controller),
 ):
     result = await controller.activate(agent_id)
@@ -408,7 +451,7 @@ async def activate_agent(
 @app.post("/api/agents/{agent_id}/deactivate", dependencies=[Depends(rate_limit)])
 async def deactivate_agent(
     agent_id: str,
-    user: TokenData = Depends(require_auth),
+    user: TokenData = Depends(require_permission(Permission.AGENT_UPDATE)),
     controller: AgentController = Depends(get_agent_controller),
 ):
     result = await controller.deactivate(agent_id)
@@ -418,7 +461,7 @@ async def deactivate_agent(
 @app.get("/api/costs/{provider_id}", dependencies=[Depends(rate_limit)])
 async def analyze_costs(
     provider_id: str,
-    user: TokenData = Depends(require_auth),
+    user: TokenData = Depends(require_permission(Permission.COST_READ)),
     controller: CostController = Depends(get_cost_controller),
 ):
     result = await controller.analyze(provider_id)
@@ -460,11 +503,15 @@ class ConnectionManager:
         await websocket.send_json(message)
 
     async def broadcast(self, message: dict):
+        dead_connections = []
         for connection in self.active_connections:
             try:
                 await connection.send_json(message)
             except Exception:
-                pass
+                logger.debug("Removing dead WebSocket connection during broadcast")
+                dead_connections.append(connection)
+        for conn in dead_connections:
+            self.disconnect(conn)
 
 
 manager = ConnectionManager()
@@ -481,26 +528,22 @@ def _parse_ws_message(data: str) -> Optional[dict]:
         return None
 
 
-async def _authenticate_ws(websocket: WebSocket) -> Optional[TokenData]:
-    """3.4: Authenticate WebSocket via query param token."""
+def _validate_ws_token(websocket: WebSocket) -> Optional[TokenData]:
+    """Validate WebSocket token without accepting/closing the connection."""
     token = websocket.query_params.get("token")
     if not token:
-        await websocket.close(code=4001, reason="Authentication required")
         return None
     auth_service = get_auth_service()
-    token_data = auth_service.verify_token(token)
-    if not token_data:
-        await websocket.close(code=4001, reason="Invalid token")
-        return None
-    return token_data
+    return auth_service.verify_token(token)
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    user = await _authenticate_ws(websocket)
+    user = _validate_ws_token(websocket)
     if not user:
+        await websocket.close(code=4001, reason="Authentication required")
         return
+    await websocket.accept()
     await manager.connect(websocket)
     try:
         while True:
@@ -525,10 +568,11 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.websocket("/ws/copilot")
 async def copilot_websocket(websocket: WebSocket):
-    await websocket.accept()
-    user = await _authenticate_ws(websocket)
+    user = _validate_ws_token(websocket)
     if not user:
+        await websocket.close(code=4001, reason="Authentication required")
         return
+    await websocket.accept()
     await manager.connect(websocket)
 
     try:

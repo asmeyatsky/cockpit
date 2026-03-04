@@ -89,7 +89,7 @@ class AICopilotService:
             )
 
         name_match = re.search(
-            r"(?:named|called|name\s+is|for\s+)?([a-zA-Z0-9_-]+)", message
+            r"(?:named|called|name\s+is)\s+([a-zA-Z0-9_-]+)", message
         )
         name = name_match.group(1) if name_match else f"{provider_type}-provider"
 
@@ -288,4 +288,6 @@ def get_copilot_service(container=None) -> AICopilotService:
     global _copilot_service
     if _copilot_service is None:
         _copilot_service = AICopilotService(container=container)
+    elif container is not None and _copilot_service._container is not container:
+        _copilot_service._container = container
     return _copilot_service

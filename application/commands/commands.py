@@ -54,6 +54,16 @@ class UseCaseResult:
     error: Optional[str] = None
 
 
+async def _publish_and_clear_events(entity, event_bus: EventBusPort, repo):
+    """Publish domain events and save entity with events cleared to prevent re-publishing."""
+    if entity.domain_events:
+        await event_bus.publish(list(entity.domain_events))
+        from dataclasses import replace
+        entity = replace(entity, domain_events=())
+        await repo.save(entity)
+    return entity
+
+
 class CreateCloudProviderUseCase:
     def __init__(
         self,
@@ -81,9 +91,7 @@ class CreateCloudProviderUseCase:
             )
 
             saved_provider = await self._repo.save(provider)
-
-            if saved_provider.domain_events:
-                await self._event_bus.publish(list(saved_provider.domain_events))
+            saved_provider = await _publish_and_clear_events(saved_provider, self._event_bus, self._repo)
 
             return UseCaseResult(
                 success=True,
@@ -117,9 +125,7 @@ class ConnectProviderUseCase:
             if connected:
                 updated_provider = provider.connect()
                 await self._repo.save(updated_provider)
-
-                if updated_provider.domain_events:
-                    await self._event_bus.publish(list(updated_provider.domain_events))
+                updated_provider = await _publish_and_clear_events(updated_provider, self._event_bus, self._repo)
 
                 return UseCaseResult(
                     success=True,
@@ -170,14 +176,20 @@ class CreateResourceUseCase:
                 name=name,
                 state=ResourceState.PENDING,
                 region=region,
-                tags=tags or {},
+                tags=tuple((tags or {}).items()),
             )
 
-            created_resource = await self._resource_port.create(provider, config)
-            saved_resource = await self._resource_repo.save(created_resource)
-
-            if saved_resource.domain_events:
-                await self._event_bus.publish(list(saved_resource.domain_events))
+            # Provision via infrastructure adapter, then save the domain entity
+            provisioned = await self._resource_port.create(provider, config)
+            # Merge any infrastructure-assigned fields (e.g. ARN) into our entity
+            from dataclasses import replace
+            resource = replace(
+                resource,
+                arn=getattr(provisioned, "arn", None),
+                state=provisioned.state if hasattr(provisioned, "state") else ResourceState.RUNNING,
+            )
+            saved_resource = await self._resource_repo.save(resource)
+            saved_resource = await _publish_and_clear_events(saved_resource, self._event_bus, self._resource_repo)
 
             return UseCaseResult(
                 success=True,
@@ -212,9 +224,7 @@ class ManageResourceUseCase:
             if success:
                 updated = resource.start()
                 await self._repo.save(updated)
-
-                if updated.domain_events:
-                    await self._event_bus.publish(list(updated.domain_events))
+                updated = await _publish_and_clear_events(updated, self._event_bus, self._repo)
 
                 return UseCaseResult(
                     success=True,
@@ -239,9 +249,7 @@ class ManageResourceUseCase:
             if success:
                 updated = resource.stop()
                 await self._repo.save(updated)
-
-                if updated.domain_events:
-                    await self._event_bus.publish(list(updated.domain_events))
+                updated = await _publish_and_clear_events(updated, self._event_bus, self._repo)
 
                 return UseCaseResult(
                     success=True,
@@ -266,9 +274,7 @@ class ManageResourceUseCase:
             if success:
                 updated = resource.terminate()
                 await self._repo.save(updated)
-
-                if updated.domain_events:
-                    await self._event_bus.publish(list(updated.domain_events))
+                updated = await _publish_and_clear_events(updated, self._event_bus, self._repo)
 
                 return UseCaseResult(
                     success=True,
@@ -317,9 +323,7 @@ class CreateAgentUseCase:
             )
 
             saved_agent = await self._repo.save(agent)
-
-            if saved_agent.domain_events:
-                await self._event_bus.publish(list(saved_agent.domain_events))
+            saved_agent = await _publish_and_clear_events(saved_agent, self._event_bus, self._repo)
 
             return UseCaseResult(
                 success=True,
@@ -349,9 +353,7 @@ class ActivateAgentUseCase:
 
             activated = agent.activate()
             await self._repo.save(activated)
-
-            if activated.domain_events:
-                await self._event_bus.publish(list(activated.domain_events))
+            activated = await _publish_and_clear_events(activated, self._event_bus, self._repo)
 
             return UseCaseResult(
                 success=True,
@@ -380,9 +382,7 @@ class DeactivateAgentUseCase:
 
             deactivated = agent.deactivate()
             await self._repo.save(deactivated)
-
-            if deactivated.domain_events:
-                await self._event_bus.publish(list(deactivated.domain_events))
+            deactivated = await _publish_and_clear_events(deactivated, self._event_bus, self._repo)
 
             return UseCaseResult(
                 success=True,
@@ -411,9 +411,7 @@ class DisconnectProviderUseCase:
 
             disconnected = provider.disconnect()
             await self._repo.save(disconnected)
-
-            if disconnected.domain_events:
-                await self._event_bus.publish(list(disconnected.domain_events))
+            disconnected = await _publish_and_clear_events(disconnected, self._event_bus, self._repo)
 
             return UseCaseResult(
                 success=True,

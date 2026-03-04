@@ -71,7 +71,8 @@ class CostOptimizationService:
         self._resource_repo = resource_repo
 
     async def analyze_costs(self, provider_id: UUID) -> dict:
-        end_date = datetime.now()
+        from datetime import UTC
+        end_date = datetime.now(UTC)
         start_date = end_date - timedelta(days=30)
 
         current_cost = await self._cost_port.get_current_cost(

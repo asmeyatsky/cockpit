@@ -74,8 +74,8 @@ class ResourceDTO:
             state=entity.state.value,
             region=entity.region,
             arn=entity.arn,
-            metadata=entity.metadata,
-            tags=entity.tags,
+            metadata=entity.metadata_dict,
+            tags=entity.tags_dict,
             created_at=entity.created_at.isoformat(),
             updated_at=entity.updated_at.isoformat(),
         )

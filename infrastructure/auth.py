@@ -84,7 +84,7 @@ class User:
     role: Role
     hashed_password: str
     api_key: Optional[str] = None
-    created_at: datetime = None
+    created_at: Optional[datetime] = None
 
 
 @dataclass
@@ -120,6 +120,7 @@ class AuthService:
             email=email,
             role=role,
             hashed_password=hashed,
+            created_at=datetime.now(UTC),
         )
         self._users[user_id] = user
         return user

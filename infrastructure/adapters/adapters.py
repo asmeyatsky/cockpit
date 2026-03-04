@@ -79,19 +79,20 @@ class InMemoryResourceRepository:
 
 class InMemoryAgentRepository:
     def __init__(self):
-        self._agents: dict[UUID, object] = {}
+        from domain.entities.agent import Agent
+        self._agents: dict[UUID, Agent] = {}
 
-    async def save(self, agent) -> object:
+    async def save(self, agent: "Agent") -> "Agent":
         self._agents[agent.id] = agent
         return agent
 
-    async def get_by_id(self, agent_id: UUID) -> object | None:
+    async def get_by_id(self, agent_id: UUID) -> "Agent | None":
         return self._agents.get(agent_id)
 
-    async def get_by_status(self, status) -> list[object]:
+    async def get_by_status(self, status) -> "list[Agent]":
         return [a for a in self._agents.values() if a.status == status]
 
-    async def get_all(self) -> list[object]:
+    async def get_all(self) -> "list[Agent]":
         return list(self._agents.values())
 
     async def delete(self, agent_id: UUID) -> None:
