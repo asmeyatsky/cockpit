@@ -7,9 +7,12 @@ Architectural Intent:
 - Provides all dependencies to MCP servers and use cases
 """
 
+import os
+import logging
 from dataclasses import dataclass, field
 from typing import Callable
 
+from domain.entities.cloud_provider import CloudProviderType
 from domain.ports.repository_ports import (
     CloudProviderRepositoryPort,
     ResourceRepositoryPort,
@@ -56,6 +59,8 @@ from infrastructure.database.repositories import (
     SQLAlchemyAgentRepository,
     get_session,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class InMemoryEventBus:
@@ -212,13 +217,72 @@ class Container:
 _container: Container | None = None
 
 
+def _build_real_cloud_adapters(
+    provider_repo: CloudProviderRepositoryPort,
+) -> tuple[CloudProviderPort, ResourcePort]:
+    """Build dispatch adapters that route to real cloud SDK adapters."""
+    from infrastructure.adapters.aws_adapter import AWSCloudProviderAdapter, AWSResourceAdapter
+    from infrastructure.adapters.azure_adapter import AzureCloudProviderAdapter, AzureResourceAdapter
+    from infrastructure.adapters.gcp_adapter import GCPCloudProviderAdapter, GCPResourceAdapter
+    from infrastructure.adapters.dispatch_adapter import DispatchCloudProviderAdapter, DispatchResourceAdapter
+
+    aws_creds = {
+        "access_key": os.environ.get("AWS_ACCESS_KEY_ID", ""),
+        "secret_key": os.environ.get("AWS_SECRET_ACCESS_KEY", ""),
+    }
+    aws_region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+
+    azure_creds = {
+        "tenant_id": os.environ.get("AZURE_TENANT_ID", ""),
+        "client_id": os.environ.get("AZURE_CLIENT_ID", ""),
+        "client_secret": os.environ.get("AZURE_CLIENT_SECRET", ""),
+        "subscription_id": os.environ.get("AZURE_SUBSCRIPTION_ID", ""),
+    }
+
+    gcp_creds = {
+        "project_id": os.environ.get("GCP_PROJECT_ID", ""),
+    }
+
+    cloud_adapters: dict[CloudProviderType, CloudProviderPort] = {
+        CloudProviderType.AWS: AWSCloudProviderAdapter(aws_creds),
+        CloudProviderType.AZURE: AzureCloudProviderAdapter(azure_creds),
+        CloudProviderType.GCP: GCPCloudProviderAdapter(gcp_creds),
+    }
+    resource_adapters: dict[CloudProviderType, ResourcePort] = {
+        CloudProviderType.AWS: AWSResourceAdapter(aws_creds),
+        CloudProviderType.AZURE: AzureResourceAdapter(azure_creds),
+        CloudProviderType.GCP: GCPResourceAdapter(gcp_creds),
+    }
+
+    return (
+        DispatchCloudProviderAdapter(cloud_adapters),
+        DispatchResourceAdapter(resource_adapters, provider_repo),
+    )
+
+
 def get_container() -> Container:
     global _container
     if _container is None:
         session = get_session()
+        provider_repo = SQLAlchemyCloudProviderRepository(session)
+        resource_repo = SQLAlchemyResourceRepository(session)
+        agent_repo = SQLAlchemyAgentRepository(session)
+
+        use_real = os.environ.get("COCKPIT_USE_REAL_CLOUD", "false").lower() in ("true", "1", "yes")
+
+        if use_real:
+            logger.info("Using REAL cloud adapters (COCKPIT_USE_REAL_CLOUD=true)")
+            cloud_adapter, resource_adapter = _build_real_cloud_adapters(provider_repo)
+        else:
+            logger.info("Using MOCK cloud adapters (default)")
+            cloud_adapter = MockCloudProviderAdapter()
+            resource_adapter = MockResourceAdapter()
+
         _container = Container(
-            _provider_repo=SQLAlchemyCloudProviderRepository(session),
-            _resource_repo=SQLAlchemyResourceRepository(session),
-            _agent_repo=SQLAlchemyAgentRepository(session),
+            _provider_repo=provider_repo,
+            _resource_repo=resource_repo,
+            _agent_repo=agent_repo,
+            _cloud_provider_adapter=cloud_adapter,
+            _resource_adapter=resource_adapter,
         )
     return _container
