@@ -107,10 +107,14 @@ class ConnectProviderUseCase:
         provider_repo: CloudProviderRepositoryPort,
         cloud_provider_port: CloudProviderPort,
         event_bus: EventBusPort,
+        resource_repo: ResourceRepositoryPort | None = None,
+        resource_port: ResourcePort | None = None,
     ):
         self._repo = provider_repo
         self._cloud_port = cloud_provider_port
         self._event_bus = event_bus
+        self._resource_repo = resource_repo
+        self._resource_port = resource_port
 
     async def execute(self, provider_id: str) -> UseCaseResult:
         try:
@@ -126,6 +130,12 @@ class ConnectProviderUseCase:
                 updated_provider = provider.connect()
                 await self._repo.save(updated_provider)
                 updated_provider = await _publish_and_clear_events(updated_provider, self._event_bus, self._repo)
+
+                # Auto-discover resources for the newly connected provider
+                if self._resource_port and self._resource_repo:
+                    discovered = await self._resource_port.discover_resources(updated_provider)
+                    for resource in discovered:
+                        await self._resource_repo.save(resource)
 
                 return UseCaseResult(
                     success=True,

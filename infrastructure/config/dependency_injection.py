@@ -141,6 +141,8 @@ class Container:
             provider_repo=self._provider_repo,
             cloud_provider_port=self._cloud_provider_adapter,
             event_bus=self._event_bus,
+            resource_repo=self._resource_repo,
+            resource_port=self._resource_adapter,
         )
 
     def create_resource_use_case(self) -> CreateResourceUseCase:

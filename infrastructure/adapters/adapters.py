@@ -8,12 +8,13 @@ Architectural Intent:
 """
 
 import asyncio
-from uuid import UUID
+import random
+from uuid import UUID, uuid4
 from datetime import datetime, timedelta
 from typing import Optional
 
 from domain.entities.cloud_provider import CloudProvider, ProviderStatus
-from domain.entities.resource import Resource, ResourceState
+from domain.entities.resource import Resource, ResourceState, ResourceType
 from domain.ports.repository_ports import (
     CloudProviderRepositoryPort,
     ResourceRepositoryPort,
@@ -117,9 +118,57 @@ class MockCloudProviderAdapter:
 class MockResourceAdapter:
     """Mock adapter for resource operations."""
 
-    async def create(self, provider: CloudProvider, config: dict) -> Resource:
-        from uuid import uuid4
+    _RESOURCE_TEMPLATES: dict[str, list[tuple[str, str]]] = {
+        "aws": [
+            ("web-server-prod", "compute_instance"),
+            ("web-server-staging", "compute_instance"),
+            ("api-backend", "compute_instance"),
+            ("app-assets", "storage_bucket"),
+            ("data-lake-raw", "storage_bucket"),
+            ("users-db", "database"),
+            ("analytics-db", "database"),
+            ("session-cache", "cache"),
+        ],
+        "azure": [
+            ("app-vm-01", "compute_instance"),
+            ("app-vm-02", "compute_instance"),
+            ("worker-vm", "compute_instance"),
+            ("blob-media", "storage_bucket"),
+            ("blob-backups", "storage_bucket"),
+            ("sql-primary", "database"),
+            ("cosmos-events", "database"),
+            ("redis-cache", "cache"),
+        ],
+        "gcp": [
+            ("gce-frontend-1", "compute_instance"),
+            ("gce-frontend-2", "compute_instance"),
+            ("gce-worker", "compute_instance"),
+            ("gcs-static-assets", "storage_bucket"),
+            ("gcs-logs", "storage_bucket"),
+            ("cloudsql-main", "database"),
+            ("cloudsql-replica", "database"),
+            ("memorystore-cache", "cache"),
+        ],
+    }
 
+    async def discover_resources(self, provider: CloudProvider) -> list[Resource]:
+        await asyncio.sleep(0.2)
+        provider_key = provider.provider_type.value
+        templates = self._RESOURCE_TEMPLATES.get(provider_key, self._RESOURCE_TEMPLATES["aws"])
+        chosen = random.sample(templates, k=random.randint(5, min(8, len(templates))))
+        resources = []
+        for name, rtype in chosen:
+            resources.append(Resource(
+                id=uuid4(),
+                provider_id=provider.id,
+                resource_type=ResourceType(rtype),
+                name=name,
+                state=random.choice([ResourceState.RUNNING, ResourceState.RUNNING, ResourceState.STOPPED]),
+                region=provider.region,
+            ))
+        return resources
+
+    async def create(self, provider: CloudProvider, config: dict) -> Resource:
         return Resource(
             id=uuid4(),
             provider_id=provider.id,
