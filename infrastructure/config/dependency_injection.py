@@ -50,6 +50,12 @@ from infrastructure.adapters.adapters import (
     MockCostAdapter,
     MockObservabilityAdapter,
 )
+from infrastructure.database.repositories import (
+    SQLAlchemyCloudProviderRepository,
+    SQLAlchemyResourceRepository,
+    SQLAlchemyAgentRepository,
+    get_session,
+)
 
 
 class InMemoryEventBus:
@@ -207,5 +213,10 @@ _container: Container | None = None
 def get_container() -> Container:
     global _container
     if _container is None:
-        _container = Container()
+        session = get_session()
+        _container = Container(
+            _provider_repo=SQLAlchemyCloudProviderRepository(session),
+            _resource_repo=SQLAlchemyResourceRepository(session),
+            _agent_repo=SQLAlchemyAgentRepository(session),
+        )
     return _container

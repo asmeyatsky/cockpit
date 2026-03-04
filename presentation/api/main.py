@@ -25,7 +25,8 @@ import json
 import asyncio
 
 from infrastructure.config.dependency_injection import get_container
-from infrastructure.auth import get_auth_service, get_authorization_service, TokenData, Permission, Role
+from infrastructure.auth import get_auth_service, set_auth_service, get_authorization_service, TokenData, Permission, Role, AuthService
+from infrastructure.database.repositories import get_session, SQLAlchemyUserStore
 from presentation.api.controllers import (
     CloudProviderController,
     ResourceController,
@@ -40,9 +41,14 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown logic."""
+    # Initialize DB-backed auth service
+    session = get_session()
+    user_store = SQLAlchemyUserStore(session)
+    auth = AuthService(user_store=user_store)
+    set_auth_service(auth)
+
     # Startup: only create default admin in dev mode
     if os.environ.get("COCKPIT_ENV", "development") == "development":
-        auth = get_auth_service()
         if not auth._users:
             default_password = os.environ.get("COCKPIT_ADMIN_PASSWORD", "admin")
             auth.create_user("admin", "admin@cockpit.local", default_password, role=Role.ADMIN)
@@ -244,6 +250,23 @@ async def health():
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class RegisterRequest(BaseModel):
+    username: constr(min_length=3, max_length=50)
+    email: str
+    password: constr(min_length=4, max_length=100)
+
+
+@app.post("/api/auth/register", dependencies=[Depends(rate_limit)])
+async def register(request: RegisterRequest):
+    auth_service = get_auth_service()
+    for user in auth_service._users.values():
+        if user.username == request.username:
+            raise HTTPException(status_code=409, detail="Username already taken")
+    user = auth_service.create_user(request.username, request.email, request.password, role=Role.OPERATOR)
+    token = auth_service.create_token(user)
+    return {"token": token, "user": {"id": user.id, "username": user.username, "role": user.role.value}}
 
 
 @app.post("/api/auth/login", dependencies=[Depends(rate_limit)])

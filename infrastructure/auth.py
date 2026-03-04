@@ -6,6 +6,7 @@ Architectural Intent:
 - Role-based access control (RBAC)
 - API key authentication for service accounts
 - bcrypt password hashing for security
+- Optional DB-backed user store for persistence across restarts
 """
 
 import os
@@ -96,7 +97,7 @@ class TokenData:
 
 
 class AuthService:
-    def __init__(self, secret_key: Optional[str] = None):
+    def __init__(self, secret_key: Optional[str] = None, user_store=None):
         self._secret_key = secret_key or os.environ.get("COCKPIT_SECRET_KEY")
         if not self._secret_key:
             self._secret_key = secrets.token_urlsafe(32)
@@ -106,7 +107,25 @@ class AuthService:
                 "Tokens will not survive restarts. Set COCKPIT_SECRET_KEY in production."
             )
         self._algorithm = "HS256"
+        self._user_store = user_store  # Optional SQLAlchemyUserStore
         self._users: dict[str, User] = {}
+
+        # Load existing users from DB store on startup
+        if self._user_store is not None:
+            self._load_users_from_store()
+
+    def _load_users_from_store(self):
+        """Hydrate in-memory dict from the DB store."""
+        for uid, data in self._user_store.get_all_users().items():
+            self._users[uid] = User(
+                id=data["id"],
+                username=data["username"],
+                email=data["email"],
+                role=Role(data["role"]),
+                hashed_password=data["hashed_password"],
+                api_key=data.get("api_key"),
+                created_at=data.get("created_at"),
+            )
 
     def create_user(
         self, username: str, email: str, password: str, role: Role = Role.VIEWER
@@ -123,6 +142,17 @@ class AuthService:
             created_at=datetime.now(UTC),
         )
         self._users[user_id] = user
+
+        if self._user_store is not None:
+            self._user_store.save_user(
+                user_id=user.id,
+                username=user.username,
+                email=user.email,
+                role=user.role.value,
+                hashed_password=user.hashed_password,
+                created_at=user.created_at,
+            )
+
         return user
 
     def authenticate(self, username: str, password: str) -> Optional[User]:
@@ -166,6 +196,10 @@ class AuthService:
     def create_api_key(self, user: User) -> str:
         api_key = f"ck_{secrets.token_urlsafe(32)}"
         user.api_key = api_key
+
+        if self._user_store is not None:
+            self._user_store.update_api_key(user.id, api_key)
+
         return api_key
 
     def verify_api_key(self, api_key: str) -> Optional[User]:
@@ -221,6 +255,11 @@ def get_auth_service() -> AuthService:
     if _auth_service is None:
         _auth_service = AuthService()
     return _auth_service
+
+
+def set_auth_service(service: AuthService) -> None:
+    global _auth_service
+    _auth_service = service
 
 
 def get_authorization_service() -> AuthorizationService:
